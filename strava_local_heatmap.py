@@ -2,6 +2,7 @@
 import os
 import glob
 import time
+import re
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -78,9 +79,10 @@ def main(args: Namespace) -> None:
     gpx_files_count = 0
 
     lat_lon_data = []
+    date_lat_lon_data = {}
 
     for gpx_file in gpx_files:
-        print('Reading {}'.format(os.path.basename(gpx_file)))
+        print('Reading file {} of {}: {}'.format(gpx_files_count+1, len(gpx_files), os.path.basename(gpx_file)))
 
         with open(gpx_file, encoding='utf-8') as file:
             inside_trk = False
@@ -89,22 +91,39 @@ def main(args: Namespace) -> None:
                 if not inside_trk:
                     if '<trk' in line:
                         inside_trk = True
-                    continue    # continue even if trk was found since there is no more data to be parsed (but only works if the file is multiline)
+                    continue    # continue even if trk was found since there is no more data to be parsed
                 if '<time' in line:
                     l = line.split('>')[1][:4]
-
+                    d = line.split('>')[1][:10]
+                    
                     if not args.year or l in args.year:
                         gpx_files_count += 1
-
+                        
+                        if not d in date_lat_lon_data:
+                            date_lat_lon_data[d] = []
+                        
                         for line in file:
                             if '<trkpt' in line:
                                 l = line.split('"')
 
                                 lat_lon_data.append([float(l[1]),
                                                      float(l[3])])
+                                date_lat_lon_data[d].append([float(l[1]),
+                                                    float(l[3])])
 
                     else:
                         break
+
+    dates = sorted(date_lat_lon_data.keys())
+    if args.timeseries:
+        # accumulate date_lat_lon_data
+        for di in range (0, len(dates) - 1):
+            print("Adding tracks from {} to {}".format(dates[di], dates[di+1]))
+            date_lat_lon_data[dates[di+1]]+=(date_lat_lon_data[dates[di]])
+    else:
+        date_lat_lon_data = {}
+        date_lat_lon_data[dates[-1]] = lat_lon_data
+        dates = [dates[-1]]
 
     lat_lon_data = np.array(lat_lon_data)
 
@@ -113,7 +132,7 @@ def main(args: Namespace) -> None:
                                                      args.filter,
                                                      ' with year {}'.format(' '.join(args.year)) if args.year else ''))
 
-    # crop to bounding box
+    # crop to bounding box based on all dates
     lat_bound_min, lat_bound_max, lon_bound_min, lon_bound_max = args.bounds
 
     lat_lon_data = lat_lon_data[np.logical_and(lat_lon_data[:, 0] > lat_bound_min,
@@ -129,6 +148,8 @@ def main(args: Namespace) -> None:
     # find tiles coordinates
     lat_min, lon_min = np.min(lat_lon_data, axis=0)
     lat_max, lon_max = np.max(lat_lon_data, axis=0)
+
+    print('lat_min, lat_max, lon_min, lon_max = {} {} {} {}'.format(lat_min, lat_max, lon_min, lon_max))
 
     if args.zoom > -1:
         zoom = min(args.zoom, OSM_MAX_ZOOM)
@@ -154,13 +175,17 @@ def main(args: Namespace) -> None:
     tile_count = (x_tile_max-x_tile_min+1)*(y_tile_max-y_tile_min+1)
 
     if tile_count > OSM_MAX_TILE_COUNT:
-        exit('ERROR zoom value too high, too many tiles to download')
+        exit("ERROR zoom value too high, too many tiles to download {} ".format( tile_count,))
 
     # download tiles
     os.makedirs('tiles', exist_ok=True)
 
-    supertile = np.zeros(((y_tile_max-y_tile_min+1)*OSM_TILE_SIZE,
-                          (x_tile_max-x_tile_min+1)*OSM_TILE_SIZE, 3))
+
+     # fill trackpoints
+    sigma_pixel = args.sigma if not args.orange else 1
+
+    origSupertile = np.zeros(((y_tile_max-y_tile_min+1)*OSM_TILE_SIZE,
+                        (x_tile_max-x_tile_min+1)*OSM_TILE_SIZE, 3))
 
     n = 0
     for x in range(x_tile_min, x_tile_max+1):
@@ -202,110 +227,126 @@ def main(args: Namespace) -> None:
             i = y-y_tile_min
             j = x-x_tile_min
 
-            supertile[i*OSM_TILE_SIZE:(i+1)*OSM_TILE_SIZE,
-                      j*OSM_TILE_SIZE:(j+1)*OSM_TILE_SIZE, :] = tile[:, :, :3]
+            origSupertile[i*OSM_TILE_SIZE:(i+1)*OSM_TILE_SIZE,
+                    j*OSM_TILE_SIZE:(j+1)*OSM_TILE_SIZE, :] = tile[:, :, :3]
 
     if not args.orange:
-        supertile = np.sum(supertile*[0.2126, 0.7152, 0.0722], axis=2) # to grayscale
-        supertile = 1.0-supertile # invert colors
-        supertile = np.dstack((supertile, supertile, supertile)) # to rgb
+        origSupertile = np.sum(origSupertile*[0.2126, 0.7152, 0.0722], axis=2) # to grayscale
+        origSupertile = 1.0-origSupertile # invert colors
+        origSupertile = np.dstack((origSupertile, origSupertile, origSupertile)) # to rgb
+    
 
-    # fill trackpoints
-    sigma_pixel = args.sigma if not args.orange else 1
+    for d in dates:
+        # use original supertile as basis.
+        # don't re-use the last supertile, because past tracks will have to loose coloring when new tracks are added
+        supertile = 0. + origSupertile
 
-    data = np.zeros(supertile.shape[:2])
+        lat_lon_data4date = np.array(date_lat_lon_data[d])
+        
+        data = np.zeros(supertile.shape[:2])
+        
+        lat_lon_data4date = lat_lon_data4date[np.logical_and(lat_lon_data4date[:, 0] > lat_bound_min,
+                                               lat_lon_data4date[:, 0] < lat_bound_max), :]
+        lat_lon_data4date = lat_lon_data4date[np.logical_and(lat_lon_data4date[:, 1] > lon_bound_min,
+                                               lat_lon_data4date[:, 1] < lon_bound_max), :]
 
-    xy_data = deg2xy(lat_lon_data[:, 0], lat_lon_data[:, 1], zoom)
+        xy_data = deg2xy(lat_lon_data4date[:, 0], lat_lon_data4date[:, 1], zoom)
 
-    xy_data = np.array(xy_data).T
-    xy_data = np.round((xy_data-[x_tile_min, y_tile_min])*OSM_TILE_SIZE)
+        xy_data = np.array(xy_data).T
+        xy_data = np.round((xy_data-[x_tile_min, y_tile_min])*OSM_TILE_SIZE)
 
-    ij_data = np.flip(xy_data.astype(int), axis=1) # to supertile coordinates
+        ij_data = np.flip(xy_data.astype(int), axis=1) # to supertile coordinates
 
-    for i, j in ij_data:
-        data[i-sigma_pixel:i+sigma_pixel, j-sigma_pixel:j+sigma_pixel] += 1.0
+        for i, j in ij_data:
+            data[i-sigma_pixel:i+sigma_pixel, j-sigma_pixel:j+sigma_pixel] += 1.0
 
-    # threshold to max accumulation of trackpoint
-    if not args.orange:
-        res_pixel = 156543.03*np.cos(np.radians(np.mean(lat_lon_data[:, 0])))/(2.0**zoom) # from https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames
+        # threshold to max accumulation of trackpoint
+        if not args.orange:
+            res_pixel = 156543.03*np.cos(np.radians(np.mean(lat_lon_data[:, 0])))/(2.0**zoom) # from https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames
 
-        # trackpoint max accumulation per pixel = 1/5 (trackpoint/meter) * res_pixel (meter/pixel) * activities
-        # (Strava records trackpoints every 5 meters in average for cycling activites)
-        m = max(1.0, np.round((1.0/5.0)*res_pixel*gpx_files_count))
+            # trackpoint max accumulation per pixel = 1/5 (trackpoint/meter) * res_pixel (meter/pixel) * activities
+            # (Strava records trackpoints every 5 meters in average for cycling activites)
+            m = max(1.0, np.round((1.0/5.0)*res_pixel*gpx_files_count))
 
-    else:
-        m = 1.0
+        else:
+            m = 1.0
 
-    data[data > m] = m
+        data[data > m] = m
 
-    # equalize histogram and compute kernel density estimation
-    if not args.orange:
-        data_hist, _ = np.histogram(data, bins=int(m+1))
+        # equalize histogram and compute kernel density estimation
+        if not args.orange:
+            data_hist, _ = np.histogram(data, bins=int(m+1))
 
-        data_hist = np.cumsum(data_hist)/data.size # normalized cumulated histogram
-
-        for i in range(data.shape[0]):
-            for j in range(data.shape[1]):
-                data[i, j] = m*data_hist[int(data[i, j])] # histogram equalization
-
-        data = gaussian_filter(data, float(sigma_pixel)) # kernel density estimation with normal kernel
-
-        data = (data-data.min())/(data.max()-data.min()) # normalize to [0,1]
-
-    # colorize
-    if not args.orange:
-        cmap = plt.get_cmap(PLT_COLORMAP)
-
-        data_color = cmap(data)
-        data_color[data_color == cmap(0.0)] = 0.0 # remove background color
-
-        for c in range(3):
-            supertile[:, :, c] = (1.0-data_color[:, :, c])*supertile[:, :, c]+data_color[:, :, c]
-
-    else:
-        color = np.array([255, 82, 0], dtype=float)/255 # orange
-
-        for c in range(3):
-            supertile[:, :, c] = np.minimum(supertile[:, :, c]+gaussian_filter(data, 1.0), 1.0) # white
-            supertile[:, :, c] = np.maximum(supertile[:, :, c], 0.0)
-
-        data = gaussian_filter(data, 0.5)
-        data = (data-data.min())/(data.max()-data.min())
-
-        for c in range(3):
-            supertile[:, :, c] = (1.0-data)*supertile[:, :, c]+data*color[c]
-
-    # crop image
-    i_min, j_min = np.min(ij_data, axis=0)
-    i_max, j_max = np.max(ij_data, axis=0)
-
-    supertile = supertile[max(i_min-HEATMAP_MARGIN_SIZE, 0):min(i_max+HEATMAP_MARGIN_SIZE, supertile.shape[0]),
-                          max(j_min-HEATMAP_MARGIN_SIZE, 0):min(j_max+HEATMAP_MARGIN_SIZE, supertile.shape[1])]
-
-    # save image
-    plt.imsave(args.output, supertile)
-
-    print('Saved {}'.format(args.output))
-
-    # save csv
-    if args.csv and not args.orange:
-        csv_file = '{}.csv'.format(os.path.splitext(args.output)[0])
-
-        with open(csv_file, 'w') as file:
-            file.write('latitude,longitude,intensity\n')
+            data_hist = np.cumsum(data_hist)/data.size # normalized cumulated histogram
 
             for i in range(data.shape[0]):
                 for j in range(data.shape[1]):
-                    if data[i, j] > 0.1:
-                        x = x_tile_min+j/OSM_TILE_SIZE
-                        y = y_tile_min+i/OSM_TILE_SIZE
+                    data[i, j] = m*data_hist[int(data[i, j])] # histogram equalization
 
-                        lat, lon = xy2deg(x, y, zoom)
+            data = gaussian_filter(data, float(sigma_pixel)) # kernel density estimation with normal kernel
 
-                        file.write('{},{},{}\n'.format(lat, lon, data[i,j]))
+            data = (data-data.min())/(data.max()-data.min()) # normalize to [0,1]
 
-        print('Saved {}'.format(csv_file))
+        # colorize
+        if not args.orange:
+            cmap = plt.get_cmap(PLT_COLORMAP)
 
+            data_color = cmap(data)
+            data_color[data_color == cmap(0.0)] = 0.0 # remove background color
+
+            for c in range(3):
+                supertile[:, :, c] = (1.0-data_color[:, :, c])*supertile[:, :, c]+data_color[:, :, c]
+
+        else:
+            color = np.array([255, 82, 0], dtype=float)/255 # orange
+
+            for c in range(3):
+                supertile[:, :, c] = np.minimum(supertile[:, :, c]+gaussian_filter(data, 1.0), 1.0) # white
+                supertile[:, :, c] = np.maximum(supertile[:, :, c], 0.0)
+
+            data = gaussian_filter(data, 0.5)
+            data = (data-data.min())/(data.max()-data.min())
+
+            for c in range(3):
+                supertile[:, :, c] = (1.0-data)*supertile[:, :, c]+data*color[c]
+
+        # crop image
+        i_min, j_min = np.min(ij_data, axis=0)
+        i_max, j_max = np.max(ij_data, axis=0)
+
+        # save image
+        if args.timeseries:
+            filename = re.sub(r'\.([^.]+)', r'_{}.\1', args.output).format(d)
+        else:
+            filename = args.output
+        plt.imsave(filename, supertile)
+
+        print('Saved {}'.format(filename))
+
+        # save csv
+        if args.csv and not args.orange:
+            if args.timeseries:
+                csv_file = '{}-{}.csv'.format(os.path.splitext(args.output)[0], d)
+            else:
+                csv_file = '{}.csv'.format(os.path.splitext(args.output)[0])
+
+            with open(csv_file, 'w') as file:
+                file.write('latitude,longitude,intensity\n')
+
+                for i in range(data.shape[0]):
+                    for j in range(data.shape[1]):
+                        if data[i, j] > 0.1:
+                            x = x_tile_min+j/OSM_TILE_SIZE
+                            y = y_tile_min+i/OSM_TILE_SIZE
+
+                            lat, lon = xy2deg(x, y, zoom)
+
+                            file.write('{},{},{}\n'.format(lat, lon, data[i,j]))
+
+            print('Saved {}'.format(csv_file))
+    
+    ## END date pased processing
+    
     return
 
 if __name__ == '__main__':
@@ -330,6 +371,8 @@ if __name__ == '__main__':
                         help='not a heatmap...')
     parser.add_argument('--csv', action='store_true',
                         help='also save the heatmap data to a CSV file')
+    parser.add_argument('--timeseries', action='store_true',
+                        help='create a time series for every date found in GPX files')
 
     args = parser.parse_args()
 
