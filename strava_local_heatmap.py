@@ -83,7 +83,13 @@ def main(args: Namespace) -> None:
         print('Reading {}'.format(os.path.basename(gpx_file)))
 
         with open(gpx_file, encoding='utf-8') as file:
+            inside_trk = False
             for line in file:
+                # don't use time from metadata but form the first trackpoint
+                if not inside_trk:
+                    if '<trk' in line:
+                        inside_trk = True
+                    continue    # continue even if trk was found since there is no more data to be parsed (but only works if the file is multiline)
                 if '<time' in line:
                     l = line.split('>')[1][:4]
 
