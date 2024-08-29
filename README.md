@@ -20,9 +20,11 @@ Optimized for cycling activities :bicyclist:
 ```
 usage: strava_local_heatmap.py [-h] [--dir DIR] [--filter FILTER] [--year YEAR [YEAR ...]]
                                [--bounds BOUND BOUND BOUND BOUND] [--output OUTPUT] [--zoom ZOOM] [--sigma SIGMA]
-                               [--orange] [--csv]
+                               [--orange] [--csv] [--timeseries] [--since-output SINCE_OUTPUT] [--n-days N_DAYS]
 
-optional arguments:
+Generate a PNG heatmap from local Strava GPX files
+
+options:
   -h, --help            show this help message and exit
   --dir DIR             GPX files directory (default: gpx)
   --filter FILTER       GPX files glob filter (default: *.gpx)
@@ -35,6 +37,10 @@ optional arguments:
   --sigma SIGMA         heatmap Gaussian kernel sigma in pixel (default: 1)
   --orange              not a heatmap...
   --csv                 also save the heatmap data to a CSV file
+  --timeseries          create a time series for every date found in GPX files
+  --since-output SINCE_OUTPUT
+                        output timeseries since this date (default: 1900-01-01)
+  --n-days N_DAYS       output timeseries every n days (default: 1)
 ```
 
 Note: `ZOOM` is OpenStreetMap zoom level (the number following `map=` in [www.openstreetmap.org/#map=](https://www.openstreetmap.org))
