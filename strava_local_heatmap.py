@@ -13,6 +13,7 @@ from argparse import ArgumentParser, Namespace
 
 # globals
 HEATMAP_MAX_SIZE = (2160, 3840) # maximum heatmap size in pixel
+HEATMAP_MAX_SIZE = (4160, 4840) # maximum heatmap size in pixel
 HEATMAP_MARGIN_SIZE = 32 # margin around heatmap trackpoints in pixel
 
 PLT_COLORMAP = 'hot' # matplotlib color map
@@ -20,7 +21,7 @@ PLT_COLORMAP = 'hot' # matplotlib color map
 OSM_TILE_SERVER = 'https://tile.openstreetmap.org/{}/{}/{}.png' # OSM tile url from https://wiki.openstreetmap.org/wiki/Raster_tile_providers
 OSM_TILE_SIZE = 256 # OSM tile size in pixel
 OSM_MAX_ZOOM = 19 # OSM maximum zoom level
-OSM_MAX_TILE_COUNT = 100 # maximum number of tiles to download
+OSM_MAX_TILE_COUNT = 200 # maximum number of tiles to download
 
 # functions
 def deg2xy(lat_deg: float, lon_deg: float, zoom: int) -> tuple[float, float]:
@@ -72,10 +73,33 @@ def process_dates(sigma_pixel, origSupertile,
                     x_tile_min, x_tile_max, y_tile_min, y_tile_max, 
                     zoom, gpx_files_count, 
                     dates, date_lat_lon_data):
-    for d in dates:
+    
+    output_date_cnt = 0
+    
+    # accumulate date_lat_lon_data
+    for di in range (0, len(dates) - 1):
+        if di == 0:
+            print("NOT adding anything, this is the first date {}".format(dates[di]))
+        else:
+            print("Adding tracks from prev. date {} to {}".format(dates[di-1], dates[di]))
+            date_lat_lon_data[dates[di]]+=(date_lat_lon_data[dates[di-1]])
+            date_lat_lon_data[dates[di-1]].clear()   # reset prev. dates data, we don't need it anymore 
+        d=dates[di]
+        
+        if d < args.since_output:
+            print ("Date {} is before since_output {} => skipping".format(d, args.since_output))
+            continue
+        
+        output_date_cnt += 1
+        
+        # skip all intermediate undesirable days, excluding the last one
+        if(output_date_cnt % args.n_days > 0 and not output_date_cnt==len(dates)-1):
+            print("skipping date cnt {}".format(output_date_cnt % args.n_days))
+            continue
+        
         # use original supertile as basis.
         # don't re-use the last supertile, because past tracks will have to loose coloring when new tracks are added
-        supertile = 0. + origSupertile
+        supertile = np.copy(origSupertile)
 
         lat_lon_data4date = np.array(date_lat_lon_data[d])
         
@@ -152,7 +176,7 @@ def process_dates(sigma_pixel, origSupertile,
 
         # save image
         if args.timeseries:
-            filename = re.sub(r'\.([^.]+)', r'_{}.\1', args.output).format(d)
+            filename = re.sub(r'\.([^.]+)$', r'_{}.\1', args.output).format(d)
         else:
             filename = args.output
         plt.imsave(filename, supertile)
@@ -233,10 +257,8 @@ def main(args: Namespace) -> None:
 
     dates = sorted(date_lat_lon_data.keys())
     if args.timeseries:
-        # accumulate date_lat_lon_data
-        for di in range (0, len(dates) - 1):
-            print("Adding tracks from {} to {}".format(dates[di], dates[di+1]))
-            date_lat_lon_data[dates[di+1]]+=(date_lat_lon_data[dates[di]])
+        # don't accumulate here all the dates, it would use a lot of memory
+        print ("timeseries")
     else:
         date_lat_lon_data = {}
         date_lat_lon_data[dates[-1]] = lat_lon_data
@@ -290,9 +312,10 @@ def main(args: Namespace) -> None:
         print('Auto zoom = {}'.format(zoom))
 
     tile_count = (x_tile_max-x_tile_min+1)*(y_tile_max-y_tile_min+1)
+    
 
     if tile_count > OSM_MAX_TILE_COUNT:
-        exit("ERROR zoom value too high, too many tiles to download {} ".format( tile_count,))
+        exit("ERROR zoom value too high, too many tiles to download {} ".format( tile_count))
 
     # download tiles
     os.makedirs('tiles', exist_ok=True)
@@ -304,6 +327,7 @@ def main(args: Namespace) -> None:
     origSupertile = np.zeros(((y_tile_max-y_tile_min+1)*OSM_TILE_SIZE,
                         (x_tile_max-x_tile_min+1)*OSM_TILE_SIZE, 3))
 
+    print ("tiles: {} {} {} {}, zoom={}".format(x_tile_min, x_tile_max, y_tile_min, y_tile_max, zoom))
     n = 0
     for x in range(x_tile_min, x_tile_max+1):
         for y in range(y_tile_min, y_tile_max+1):
@@ -384,6 +408,10 @@ if __name__ == '__main__':
                         help='also save the heatmap data to a CSV file')
     parser.add_argument('--timeseries', action='store_true',
                         help='create a time series for every date found in GPX files')
+    parser.add_argument('--since-output', default='1900-01-01',
+                        help='output timeseries since this date (default: 1900-01-01)')
+    parser.add_argument('--n-days', type=int, default=1,
+                        help='output timeseries every n days (default: 1)')
 
     args = parser.parse_args()
 
