@@ -93,8 +93,8 @@ def process_dates(sigma_pixel, origSupertile,
         output_date_cnt += 1
         
         # skip all intermediate undesirable days, excluding the last one
-        if(output_date_cnt % args.n_days > 0 and not output_date_cnt==len(dates)-1):
-            print("skipping date cnt {}".format(output_date_cnt % args.n_days))
+        if(not (output_date_cnt % args.n_days == 0 or di==len(dates)-1)):
+            print("skipping date cnt {}, {} of {}".format(output_date_cnt % args.n_days, di, len(dates)-1))
             continue
         
         # use original supertile as basis.
