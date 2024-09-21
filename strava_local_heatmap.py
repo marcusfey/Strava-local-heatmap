@@ -68,65 +68,133 @@ def gaussian_filter(image: np.ndarray, sigma: float) -> np.ndarray:
 
     return image
 
-def process_dates(sigma_pixel, origSupertile, 
+class GpxProcessor:
+    output_date_cnt = 0
+    sigma_pixel = None
+    origSupertile = None
+    lat_bound_min = None
+    lat_bound_max = None
+    lon_bound_min = None
+    lon_bound_max = None
+    x_tile_min = None
+    x_tile_max = None
+    y_tile_min = None
+    y_tile_max = None
+    zoom = None
+    gpx_files_count = None
+    dates = None
+    date_lat_lon_data = None
+    
+    def __init__(self, sigma_pixel, origSupertile, 
                     lat_bound_min, lat_bound_max, lon_bound_min, lon_bound_max, 
                     x_tile_min, x_tile_max, y_tile_min, y_tile_max, 
                     zoom, gpx_files_count, 
                     dates, date_lat_lon_data):
+        self.sigma_pixel = sigma_pixel
+        self.origSupertile = origSupertile
+        self.lat_bound_min = lat_bound_min
+        self.lat_bound_max = lat_bound_max
+        self.lon_bound_min = lon_bound_min
+        self.lon_bound_max = lon_bound_max
+        self.x_tile_min = x_tile_min
+        self.x_tile_max = x_tile_max
+        self.y_tile_min = y_tile_min
+        self.y_tile_max = y_tile_max
+        self.zoom = zoom
+        self.gpx_files_count = gpx_files_count
+        self.dates = dates
+        self.date_lat_lon_data = date_lat_lon_data
     
-    output_date_cnt = 0
+    def run(self):
+        
+        #output_date_cnt = 0
+
+        if args.ffmpeg:
+            fig, ax = plt.subplots()
+            ani = FuncAnimation(fig, update_frame, frames=len(dates), blit=True)
+            writer = FFMpegWriter(fps=5, metadata=dict(artist='Me'), bitrate=1800)
+            ani.save('output_animation.mp4', writer=writer)
+
+
     
-    # accumulate date_lat_lon_data
-    for di in range (0, len(dates) - 1):
+        # accumulate date_lat_lon_data
+        for di in range (0, len(self.dates) - 1):
+            self.process_1date(di)
+            # save csv
+            if args.csv and not args.orange:
+                if args.timeseries:
+                    csv_file = '{}-{}.csv'.format(os.path.splitext(args.output)[0], d)
+                else:
+                    csv_file = '{}.csv'.format(os.path.splitext(args.output)[0])
+
+                with open(csv_file, 'w') as file:
+                    file.write('latitude,longitude,intensity\n')
+
+                    for i in range(self.data.shape[0]):
+                        for j in range(self.data.shape[1]):
+                            if self.data[i, j] > 0.1:
+                                x = self.x_tile_min+j/OSM_TILE_SIZE
+                                y = self.y_tile_min+i/OSM_TILE_SIZE
+
+                                lat, lon = xy2deg(x, y, zoom)
+
+                                file.write('{},{},{}\n'.format(lat, lon, data[i,j]))
+
+                print('Saved {}'.format(csv_file))
+        
+        ## END date pased processing
+    
+
+    def process_1date(self, di):
         if di == 0:
-            print("NOT adding anything, this is the first date {}".format(dates[di]))
+            print("NOT adding anything, this is the first date {}".format(self.dates[di]))
         else:
-            print("Adding tracks from prev. date {} to {}".format(dates[di-1], dates[di]))
-            date_lat_lon_data[dates[di]]+=(date_lat_lon_data[dates[di-1]])
-            date_lat_lon_data[dates[di-1]].clear()   # reset prev. dates data, we don't need it anymore 
-        d=dates[di]
+            print("Adding tracks from prev. date {} to {}".format(self.dates[di-1], self.dates[di]))
+            self.date_lat_lon_data[self.dates[di]]+=(self.date_lat_lon_data[self.dates[di-1]])
+            self.date_lat_lon_data[self.dates[di-1]].clear()   # reset prev. self.dates data, we don't need it anymore 
+        d=self.dates[di]
         
         if d < args.since_output:
             print ("Date {} is before since_output {} => skipping".format(d, args.since_output))
-            continue
+            return
         
-        output_date_cnt += 1
+        self.output_date_cnt += 1
         
         # skip all intermediate undesirable days, excluding the last one
-        if(not (output_date_cnt % args.n_days == 0 or di==len(dates)-1)):
-            print("skipping date cnt {}, {} of {}".format(output_date_cnt % args.n_days, di, len(dates)-1))
-            continue
+        if(not (self.output_date_cnt % args.n_days == 0 or di==len(self.dates)-1)):
+            print("skipping date cnt {}, {} of {}".format(self.output_date_cnt % args.n_days, di, len(self.dates)-1))
+            return
         
         # use original supertile as basis.
         # don't re-use the last supertile, because past tracks will have to loose coloring when new tracks are added
-        supertile = np.copy(origSupertile)
+        supertile = np.copy(self.origSupertile)
 
-        lat_lon_data4date = np.array(date_lat_lon_data[d])
+        lat_lon_data4date = np.array(self.date_lat_lon_data[d])
         
         data = np.zeros(supertile.shape[:2])
         
-        lat_lon_data4date = lat_lon_data4date[np.logical_and(lat_lon_data4date[:, 0] > lat_bound_min,
-                                               lat_lon_data4date[:, 0] < lat_bound_max), :]
-        lat_lon_data4date = lat_lon_data4date[np.logical_and(lat_lon_data4date[:, 1] > lon_bound_min,
-                                               lat_lon_data4date[:, 1] < lon_bound_max), :]
+        lat_lon_data4date = lat_lon_data4date[np.logical_and(lat_lon_data4date[:, 0] > self.lat_bound_min,
+                                               lat_lon_data4date[:, 0] < self.lat_bound_max), :]
+        lat_lon_data4date = lat_lon_data4date[np.logical_and(lat_lon_data4date[:, 1] > self.lon_bound_min,
+                                               lat_lon_data4date[:, 1] < self.lon_bound_max), :]
 
-        xy_data = deg2xy(lat_lon_data4date[:, 0], lat_lon_data4date[:, 1], zoom)
+        xy_data = deg2xy(lat_lon_data4date[:, 0], lat_lon_data4date[:, 1], self.zoom)
 
         xy_data = np.array(xy_data).T
-        xy_data = np.round((xy_data-[x_tile_min, y_tile_min])*OSM_TILE_SIZE)
+        xy_data = np.round((xy_data-[self.x_tile_min, self.y_tile_min])*OSM_TILE_SIZE)
 
         ij_data = np.flip(xy_data.astype(int), axis=1) # to supertile coordinates
 
         for i, j in ij_data:
-            data[i-sigma_pixel:i+sigma_pixel, j-sigma_pixel:j+sigma_pixel] += 1.0
+            data[i-self.sigma_pixel:i+self.sigma_pixel, j-self.sigma_pixel:j+self.sigma_pixel] += 1.0
 
         # threshold to max accumulation of trackpoint
         if not args.orange:
-            res_pixel = 156543.03*np.cos(np.radians(np.mean(lat_lon_data4date[:, 0])))/(2.0**zoom) # from https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames
+            res_pixel = 156543.03*np.cos(np.radians(np.mean(lat_lon_data4date[:, 0])))/(2.0**self.zoom) # from https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames
 
             # trackpoint max accumulation per pixel = 1/5 (trackpoint/meter) * res_pixel (meter/pixel) * activities
             # (Strava records trackpoints every 5 meters in average for cycling activites)
-            m = max(1.0, np.round((1.0/5.0)*res_pixel*gpx_files_count))
+            m = max(1.0, np.round((1.0/5.0)*res_pixel*self.gpx_files_count))
 
         else:
             m = 1.0
@@ -143,7 +211,7 @@ def process_dates(sigma_pixel, origSupertile,
                 for j in range(data.shape[1]):
                     data[i, j] = m*data_hist[int(data[i, j])] # histogram equalization
 
-            data = gaussian_filter(data, float(sigma_pixel)) # kernel density estimation with normal kernel
+            data = gaussian_filter(data, float(self.sigma_pixel)) # kernel density estimation with normal kernel
 
             data = (data-data.min())/(data.max()-data.min()) # normalize to [0,1]
 
@@ -174,39 +242,20 @@ def process_dates(sigma_pixel, origSupertile,
         i_min, j_min = np.min(ij_data, axis=0)
         i_max, j_max = np.max(ij_data, axis=0)
 
-        # save image
-        if args.timeseries:
-            filename = re.sub(r'\.([^.]+)$', r'_{}.\1', args.output).format(d)
+            
+        if args.ffmpeg:
+            pass #fixme
+            
         else:
-            filename = args.output
-        plt.imsave(filename, supertile)
-
-        print('Saved {}'.format(filename))
-
-        # save csv
-        if args.csv and not args.orange:
+            # save image
             if args.timeseries:
-                csv_file = '{}-{}.csv'.format(os.path.splitext(args.output)[0], d)
+                filename = re.sub(r'\.([^.]+)$', r'_{}.\1', args.output).format(d)
             else:
-                csv_file = '{}.csv'.format(os.path.splitext(args.output)[0])
-
-            with open(csv_file, 'w') as file:
-                file.write('latitude,longitude,intensity\n')
-
-                for i in range(data.shape[0]):
-                    for j in range(data.shape[1]):
-                        if data[i, j] > 0.1:
-                            x = x_tile_min+j/OSM_TILE_SIZE
-                            y = y_tile_min+i/OSM_TILE_SIZE
-
-                            lat, lon = xy2deg(x, y, zoom)
-
-                            file.write('{},{},{}\n'.format(lat, lon, data[i,j]))
-
-            print('Saved {}'.format(csv_file))
+                filename = args.output
+            plt.imsave(filename, supertile)
+            
+            print('Saved {}'.format(filename))
     
-    ## END date pased processing
-
 
 def main(args: Namespace) -> None:
     # read GPX trackpoints
@@ -376,11 +425,12 @@ def main(args: Namespace) -> None:
         origSupertile = 1.0-origSupertile # invert colors
         origSupertile = np.dstack((origSupertile, origSupertile, origSupertile)) # to rgb
     
-    process_dates(sigma_pixel, origSupertile, 
+    proc = GpxProcessor(sigma_pixel, origSupertile, 
                     lat_bound_min, lat_bound_max, lon_bound_min, lon_bound_max, 
                     x_tile_min, x_tile_max, y_tile_min, y_tile_max, 
                     zoom, gpx_files_count, 
                     dates, date_lat_lon_data)
+    proc.run()
     
     return
 
@@ -408,6 +458,8 @@ if __name__ == '__main__':
                         help='also save the heatmap data to a CSV file')
     parser.add_argument('--timeseries', action='store_true',
                         help='create a time series for every date found in GPX files')
+    parser.add_argument('--ffmpeg', action='store_true',
+                        help='create mp4')
     parser.add_argument('--since-output', default='1900-01-01',
                         help='output timeseries since this date (default: 1900-01-01)')
     parser.add_argument('--n-days', type=int, default=1,
